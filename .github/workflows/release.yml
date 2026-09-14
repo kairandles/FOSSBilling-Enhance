@@ -1,0 +1,38 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the manifest version matches the tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          MANIFEST="$(jq -r .version modules/Enhance/manifest.json)"
+          if [ "$MANIFEST" != "$VERSION" ]; then
+            echo "Tag is $VERSION but the manifest says $MANIFEST"
+            exit 1
+          fi
+
+      - name: Build the archives
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          (cd modules/Enhance && zip -r -X "$GITHUB_WORKSPACE/Enhance.zip" .)
+          git archive --format=zip --prefix="fossbilling-enhance-$VERSION/" -o "fossbilling-enhance-$VERSION.zip" HEAD
+          awk -v v="$VERSION" '/^## /{p = ($2 == v)} p' CHANGELOG.md | tail -n +2 > notes.md
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" --title "$VERSION" --notes-file notes.md Enhance.zip "fossbilling-enhance-$VERSION.zip"

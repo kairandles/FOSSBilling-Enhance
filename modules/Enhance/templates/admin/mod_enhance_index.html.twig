@@ -1,0 +1,143 @@
+{% extends 'layout_default.html.twig' %}
+
+{% block meta_title %}{{ 'Enhance'|trans }}{% endblock %}
+
+{% set active_menu = 'extensions' %}
+
+{% block content %}
+    {% set servers = admin.enhance_server_get_list %}
+    <div class="card">
+        <div class="card-header">
+            <div>
+                <h3 class="card-title">{{ 'Sync Hosting Plans from Enhance'|trans }}</h3>
+                <p class="card-subtitle">{{ 'The packages configured in your Enhance panel become hosting plans with the same name and limits, linked by their Enhance plan ID. Plans that already match a package are left unchanged unless you choose to overwrite them.'|trans }}</p>
+            </div>
+        </div>
+        {% if servers|length == 0 %}
+        <div class="card-body text-secondary">
+            {{ 'No hosting server uses the Enhance manager yet.'|trans }}
+            <a href="{{ 'servicehosting'|url }}#tab-servers">{{ 'Add one under Hosting plans and servers.'|trans }}</a>
+        </div>
+        {% else %}
+        <div class="card-body">
+            <div class="row g-3">
+                <div class="col-md-8">
+                    <label class="form-label" for="sync-plans-server">{{ 'Server'|trans }}</label>
+                    <select class="form-select" id="sync-plans-server">
+                        {% for server in servers %}
+                            <option value="{{ server.id }}">{{ server.name }} ({{ server.hostname }})</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-4 d-flex align-items-end">
+                    <button class="btn btn-secondary w-100" type="button" id="sync-plans-load">{{ 'Load packages'|trans }}</button>
+                </div>
+            </div>
+        </div>
+        <div id="sync-plans-results" hidden>
+            <div class="table-responsive">
+                <table class="table table-vcenter card-table">
+                    <thead>
+                        <tr>
+                            <th class="w-1"><input class="form-check-input m-0 align-middle" type="checkbox" id="sync-plans-all" checked aria-label="{{ 'Select all'|trans }}"></th>
+                            <th>{{ 'Package'|trans }}</th>
+                            <th>{{ 'Disk quota'|trans }}</th>
+                            <th>{{ 'Bandwidth'|trans }}</th>
+                            <th>{{ 'Hosting plan'|trans }}</th>
+                        </tr>
+                    </thead>
+                    <tbody id="sync-plans-rows"></tbody>
+                </table>
+            </div>
+            <div class="card-body border-top">
+                <label class="form-label">{{ 'Plans that already match a package'|trans }}</label>
+                <div class="d-flex flex-wrap gap-3">
+                    <label class="form-check">
+                        <input class="form-check-input" type="radio" name="sync-plans-overwrite" value="0" checked>
+                        <span class="form-check-label">{{ 'Leave unchanged'|trans }}</span>
+                    </label>
+                    <label class="form-check">
+                        <input class="form-check-input" type="radio" name="sync-plans-overwrite" value="1">
+                        <span class="form-check-label">{{ 'Overwrite name and limits'|trans }}</span>
+                    </label>
+                </div>
+            </div>
+            <div class="card-footer text-end">
+                <button type="button" class="btn btn-primary" id="sync-plans-submit" disabled>{{ 'Sync selected'|trans }}</button>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+{% endblock %}
+
+{% block js %}
+<script>
+    (function () {
+        const serverSelect = document.getElementById('sync-plans-server');
+        if (!serverSelect) {
+            return;
+        }
+
+        const results = document.getElementById('sync-plans-results');
+        const rows = document.getElementById('sync-plans-rows');
+        const submit = document.getElementById('sync-plans-submit');
+        const selectAll = document.getElementById('sync-plans-all');
+        const escapeHtml = (value) => String(value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+        const limit = (value) => (value === null || value === undefined || value === '') ? {{ 'Unlimited'|trans|json_encode|raw }} : escapeHtml(value) + ' MB';
+
+        document.getElementById('sync-plans-load').addEventListener('click', () => {
+            rows.innerHTML = '';
+            results.hidden = true;
+            submit.disabled = true;
+
+            FOSSBilling.api.admin.get('enhance/server_get_packages', { id: serverSelect.value }, (packages) => {
+                packages.forEach((pkg) => {
+                    let status = '<span class="badge bg-green-lt">' + {{ 'New'|trans|json_encode|raw }} + '</span>';
+                    if (pkg.hosting_plan_id) {
+                        const label = pkg.matched_by === 'config' ? {{ 'Linked to'|trans|json_encode|raw }} : {{ 'Same name as'|trans|json_encode|raw }};
+                        status = '<span class="badge bg-azure-lt">' + label + ' ' + escapeHtml(pkg.hosting_plan_name) + '</span>';
+                    }
+
+                    const row = document.createElement('tr');
+                    row.innerHTML = '<td><input class="form-check-input m-0 align-middle" type="checkbox" value="' + escapeHtml(pkg.id) + '" checked></td>'
+                        + '<td>' + escapeHtml(pkg.name) + '</td>'
+                        + '<td>' + limit(pkg.quota) + '</td>'
+                        + '<td>' + limit(pkg.bandwidth) + '</td>'
+                        + '<td>' + status + '</td>';
+                    rows.appendChild(row);
+                });
+
+                results.hidden = packages.length === 0;
+                submit.disabled = packages.length === 0;
+                selectAll.checked = true;
+                if (packages.length === 0) {
+                    FOSSBilling.message({{ 'No packages were found on this server'|trans|json_encode|raw }}, 'error');
+                }
+            });
+        });
+
+        selectAll.addEventListener('change', () => {
+            rows.querySelectorAll('input[type="checkbox"]').forEach((box) => { box.checked = selectAll.checked; });
+        });
+
+        submit.addEventListener('click', () => {
+            const packages = Array.from(rows.querySelectorAll('input[type="checkbox"]:checked')).map((box) => box.value);
+            if (packages.length === 0) {
+                return;
+            }
+
+            submit.disabled = true;
+            FOSSBilling.api.admin.post('enhance/hp_sync', {
+                server_id: serverSelect.value,
+                packages: packages,
+                overwrite: document.querySelector('input[name="sync-plans-overwrite"]:checked').value,
+            }, (summary) => {
+                FOSSBilling.message({{ 'Hosting plans synced'|trans|json_encode|raw }} + ': ' + summary.created + ' ' + {{ 'created'|trans|json_encode|raw }} + ', ' + summary.updated + ' ' + {{ 'updated'|trans|json_encode|raw }} + ', ' + summary.skipped + ' ' + {{ 'skipped'|trans|json_encode|raw }});
+                setTimeout(() => window.location.reload(), 1200);
+            }, () => {
+                submit.disabled = false;
+            });
+        });
+    })();
+</script>
+{% endblock %}

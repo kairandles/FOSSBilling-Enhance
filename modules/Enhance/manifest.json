@@ -1,0 +1,12 @@
+{
+  "id": "enhance",
+  "type": "mod",
+  "name": "Enhance",
+  "icon_url": "icon.svg",
+  "description": "Companion module for the Enhance server manager: creates FOSSBilling hosting plans from the packages configured in your Enhance control panel",
+  "author": "Kai Randles",
+  "author_url": "https://github.com/kairandles",
+  "homepage_url": "https://github.com/kairandles/FOSSBilling-Enhance",
+  "license": "https://www.apache.org/licenses/LICENSE-2.0",
+  "version": "0.1.0"
+}
