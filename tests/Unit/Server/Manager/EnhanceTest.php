@@ -81,6 +81,12 @@ function enhanceWebsite(array $overrides = []): array
         'status' => 'active',
         'orgId' => enhanceCustomerId(),
         'subscriptionId' => 42,
+        'kind' => 'normal',
+        'size' => 6434000,
+        'phpVersion' => 'php85',
+        'appServerName' => 'web01.example.net',
+        'createdAt' => '2026-09-13T20:10:22Z',
+        'aliases' => [['id' => 'd3', 'domain' => 'example.net', 'kind' => 'alias'], ['id' => 'd4', 'domain' => 'example-com.preview.panel.example.com', 'kind' => 'preview']],
         'serverIps' => [['ip' => '203.0.113.5', 'isPrimary' => false], ['ip' => '203.0.113.10', 'isPrimary' => true]],
     ], $overrides);
 }
@@ -88,6 +94,28 @@ function enhanceWebsite(array $overrides = []): array
 function enhanceMember(): array
 {
     return ['id' => enhanceMemberId(), 'loginId' => enhanceLoginId(), 'email' => 'client@example.com', 'roles' => ['Owner']];
+}
+
+function enhanceSubscription(array $overrides = []): array
+{
+    return array_merge([
+        'id' => 42,
+        'planId' => 7,
+        'planName' => 'Business',
+        'status' => 'active',
+        'resources' => [
+            ['name' => 'diskspace', 'total' => 10000000000, 'usage' => 2500000000],
+            ['name' => 'transfer', 'usage' => 750000000],
+            ['name' => 'websites', 'total' => 1, 'usage' => 1],
+            ['name' => 'addonDomains', 'total' => 2, 'usage' => 0],
+            ['name' => 'subdomains', 'total' => 5, 'usage' => 3],
+            ['name' => 'domainAliases', 'total' => 0, 'usage' => 0],
+            ['name' => 'mailboxes', 'total' => 10, 'usage' => 4],
+            ['name' => 'mysqlDbs', 'usage' => 2],
+            ['name' => 'ftpUsers', 'total' => 3, 'usage' => 1],
+            ['name' => 'pageViews', 'usage' => 1200],
+        ],
+    ], $overrides);
 }
 
 function enhanceListing(array $items): array
@@ -111,6 +139,19 @@ function enhanceClient(array &$requests, array $state = []): MockHttpClient
         'logins' => [['id' => enhanceLoginId(), 'email' => 'client@example.com']],
         'loginConflict' => false,
         'websiteCreationFails' => false,
+        'subscription' => enhanceSubscription(),
+        'subscriptionFails' => false,
+        'metrics' => [
+            ['bytesReceived' => 9567, 'bytesSent' => 39674, 'uniqueHits' => 10, 'botHits' => 0, 'totalHits' => 39, 'datetime' => '2026-09-14T00:00:00Z'],
+            ['bytesReceived' => 233934, 'bytesSent' => 293581, 'uniqueHits' => 64, 'botHits' => 3, 'totalHits' => 277, 'datetime' => '2026-09-13T00:00:00Z'],
+        ],
+        'metricsFails' => false,
+        'backups' => [
+            ['id' => 1, 'startedAt' => '2026-09-12T13:44:06Z', 'finishedAt' => '2026-09-12T13:44:06Z', 'kind' => 'automatic', 'homeDirStatus' => 'successful'],
+            ['id' => 2, 'startedAt' => '2026-09-13T13:44:09Z', 'finishedAt' => '2026-09-13T13:44:09Z', 'kind' => 'automatic', 'homeDirStatus' => 'successful'],
+            ['id' => 3, 'startedAt' => '2026-09-14T13:44:09Z', 'kind' => 'automatic', 'homeDirStatus' => 'failed'],
+        ],
+        'backupsFails' => false,
         'orgStatus' => 'active',
     ];
 
@@ -148,6 +189,9 @@ function enhanceClient(array &$requests, array $state = []): MockHttpClient
             $route === "POST /api/orgs/{$customer}/websites" => $state['websiteCreationFails'] ? $json(['message' => 'quota'], 500) : $json(['id' => $website], 201),
             $route === "GET /api/orgs/{$customer}/websites/{$website}" => $json(enhanceWebsite()),
             $route === "GET /api/orgs/{$org}/plans" => $json(enhanceListing($state['plans'])),
+            str_ends_with($route, '/metrics') && str_starts_with($route, "GET /api/orgs/{$customer}/websites/") => $state['metricsFails'] ? $json(['message' => 'boom'], 500) : $json(['items' => $state['metrics']]),
+            str_ends_with($route, '/backups') && str_starts_with($route, "GET /api/orgs/{$customer}/websites/") => $state['backupsFails'] ? $json(['message' => 'boom'], 500) : $json(['items' => $state['backups']]),
+            $route === "GET /api/orgs/{$customer}/subscriptions/42" => $state['subscriptionFails'] ? $json(['message' => 'boom'], 500) : $json($state['subscription']),
             $route === "GET /api/orgs/{$customer}/members/" . enhanceMemberId() . '/sso' => $json('https://panel.example.com/sso?otp=one-time', 201),
             $route === "POST /api/orgs/{$customer}/websites/{$website}/domains" => $json(['id' => 'd2'], 201),
             str_starts_with($route, "PATCH /api/orgs/{$customer}/"),
@@ -559,6 +603,109 @@ test('listPackages maps Enhance plan resources onto hosting plan limits', functi
         ])
         ->and(enhanceRoutes($requests))->toBe(['GET /orgs/' . enhanceOrgId() . '/plans']);
 });
+
+test('accountUsage reports the subscription usage against the plan limits', function (): void {
+    $requests = [];
+
+    $usage = createEnhanceManager(enhanceClient($requests))->accountUsage(createEnhanceAccount());
+
+    expect($usage)->toBe([
+        'plan_name' => 'Business',
+        'status' => 'active',
+        'suspended' => false,
+        'disk_used_mb' => 2500,
+        'disk_quota_mb' => 10000,
+        'bandwidth_used_mb' => 750,
+        'bandwidth_limit_mb' => null,
+        'counts' => [
+            'websites' => ['used' => 1, 'limit' => 1],
+            'addon_domains' => ['used' => 0, 'limit' => 2],
+            'subdomains' => ['used' => 3, 'limit' => 5],
+            'domain_aliases' => ['used' => 0, 'limit' => 0],
+            'mailboxes' => ['used' => 4, 'limit' => 10],
+            'databases' => ['used' => 2, 'limit' => null],
+            'ftp_users' => ['used' => 1, 'limit' => 3],
+        ],
+        'websites' => [[
+            'domain' => 'example.com',
+            'primary' => true,
+            'aliases' => ['example.net'],
+            'kind' => 'normal',
+            'suspended' => false,
+            'disk_used_bytes' => 6434000,
+            'php_version' => '8.5',
+            'server' => 'web01.example.net',
+            'created_at' => '2026-09-13T20:10:22Z',
+            'last_backup_at' => '2026-09-13T13:44:09Z',
+            'stats' => ['days' => 30, 'visitors' => 74, 'requests' => 316, 'bot_requests' => 3, 'bytes_sent' => 333255, 'bytes_received' => 243501],
+        ]],
+    ])
+        ->and(enhanceRoutes($requests))->toBe([
+            'GET /orgs/' . enhanceOrgId() . '/customers',
+            'GET /orgs/' . enhanceCustomerId() . '/websites',
+            'GET /orgs/' . enhanceCustomerId() . '/subscriptions/42',
+            'GET /orgs/' . enhanceCustomerId() . '/websites',
+            'GET /orgs/' . enhanceCustomerId() . '/websites/' . enhanceWebsiteId() . '/metrics',
+            'GET /orgs/' . enhanceCustomerId() . '/websites/' . enhanceWebsiteId() . '/backups',
+        ])
+        ->and($requests[3]['query'])->toMatchArray(['subscriptionId' => '42'])
+        ->and($requests[4]['query'])->toHaveKey('start')
+        ->and($requests[4]['query']['granularity'])->toBe('day');
+});
+
+test('accountUsage lists the account domain first, skips Enhance-owned websites and tolerates missing metrics and backups', function (): void {
+    $requests = [];
+    $websites = [
+        enhanceWebsite(['id' => 'w-staging', 'kind' => 'staging', 'domain' => ['domain' => 'staging.example.com'], 'status' => 'disabled', 'suspendedBy' => enhanceOrgId(), 'aliases' => []]),
+        enhanceWebsite(['id' => 'w-panel', 'kind' => 'controlPanel', 'domain' => ['domain' => 'panel.example.com']]),
+        enhanceWebsite(['id' => 'w-gone', 'status' => 'deleted', 'domain' => ['domain' => 'old.example.com']]),
+        enhanceWebsite(),
+    ];
+
+    $usage = createEnhanceManager(enhanceClient($requests, ['websites' => $websites, 'metricsFails' => true, 'backupsFails' => true]))->accountUsage(createEnhanceAccount());
+
+    expect(array_column($usage['websites'], 'domain'))->toBe(['example.com', 'staging.example.com'])
+        ->and(array_column($usage['websites'], 'primary'))->toBe([true, false])
+        ->and($usage['websites'][0]['stats'])->toBeNull()
+        ->and($usage['websites'][0]['last_backup_at'])->toBeNull()
+        ->and($usage['websites'][1])->toMatchArray(['kind' => 'staging', 'suspended' => true, 'aliases' => []]);
+});
+
+test('accountUsage flags a suspended subscription and leaves out resources the plan does not track', function (): void {
+    $requests = [];
+    $subscription = enhanceSubscription(['status' => 'suspended', 'resources' => [['name' => 'diskspace', 'usage' => 0]]]);
+
+    $usage = createEnhanceManager(enhanceClient($requests, ['subscription' => $subscription]))->accountUsage(createEnhanceAccount());
+
+    expect($usage['suspended'])->toBeTrue()
+        ->and($usage['status'])->toBe('suspended')
+        ->and($usage['disk_used_mb'])->toBe(0)
+        ->and($usage['disk_quota_mb'])->toBeNull()
+        ->and($usage['bandwidth_used_mb'])->toBe(0)
+        ->and($usage['bandwidth_limit_mb'])->toBeNull()
+        ->and($usage['counts'])->toBe([]);
+});
+
+test('accountUsage flags a suspended website even when its subscription is active', function (): void {
+    $requests = [];
+
+    $usage = createEnhanceManager(enhanceClient($requests, ['websites' => [enhanceWebsite(['status' => 'disabled', 'suspendedBy' => enhanceOrgId()])]]))->accountUsage(createEnhanceAccount());
+
+    expect($usage['suspended'])->toBeTrue()
+        ->and($usage['status'])->toBe('active');
+});
+
+test('accountUsage fails when the website has no subscription', function (): void {
+    $requests = [];
+
+    createEnhanceManager(enhanceClient($requests, ['websites' => [enhanceWebsite(['subscriptionId' => null])]]))->accountUsage(createEnhanceAccount());
+})->throws(Server_Exception::class, 'read the account usage');
+
+test('accountUsage passes API errors on', function (): void {
+    $requests = [];
+
+    createEnhanceManager(enhanceClient($requests, ['subscriptionFails' => true]))->accountUsage(createEnhanceAccount());
+})->throws(Server_Exception::class, 'HttpClientException');
 
 test('username and IP changes are reported as unsupported', function (): void {
     $requests = [];

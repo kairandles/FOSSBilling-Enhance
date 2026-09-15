@@ -27,6 +27,21 @@ class Server_Manager_Enhance extends Server_Manager
     private const int PAGE_SIZE = 100;
     private const int MAX_PAGES = 100;
     private const string ROLE_OWNER = 'Owner';
+    private const int METRICS_DAYS = 30;
+
+    /** Website kinds shown to clients; control panel, webmail and hostname sites are Enhance's own. */
+    private const array WEBSITE_KINDS = ['normal', 'staging'];
+
+    /** Enhance resource names that are counts, and the keys accountUsage() reports them under. */
+    private const array COUNTED_RESOURCES = [
+        'websites' => 'websites',
+        'addonDomains' => 'addon_domains',
+        'subdomains' => 'subdomains',
+        'domainAliases' => 'domain_aliases',
+        'mailboxes' => 'mailboxes',
+        'mysqlDbs' => 'databases',
+        'ftpUsers' => 'ftp_users',
+    ];
 
     public static function getForm(): array
     {
@@ -186,6 +201,161 @@ class Server_Manager_Enhance extends Server_Manager
         }
 
         return $updated;
+    }
+
+    /**
+     * Live usage of the subscription behind the account. Enhance tracks usage per subscription, so the
+     * figures cover every website on it, not only the account domain. Sizes are in MB; a null limit is unlimited.
+     *
+     * @return array{plan_name: string, status: string, suspended: bool, disk_used_mb: int, disk_quota_mb: ?int, bandwidth_used_mb: int, bandwidth_limit_mb: ?int, counts: array<string, array{used: int, limit: ?int}>, websites: list<array<string, mixed>>}
+     */
+    public function accountUsage(Server_Account $account): array
+    {
+        [$org, $website] = $this->resolve($account);
+        $subscriptionId = $this->subscriptionId($website);
+        if ($subscriptionId === null) {
+            $this->fail(__trans('read the account usage'));
+        }
+
+        $subscription = $this->request('GET', $this->subscriptionPath($org['id'], $subscriptionId));
+        if (!is_array($subscription)) {
+            $this->fail(__trans('read the account usage'));
+        }
+
+        $resources = [];
+        foreach ($subscription['resources'] ?? [] as $resource) {
+            if (isset($resource['name'])) {
+                $resources[$resource['name']] = $resource;
+            }
+        }
+
+        $counts = [];
+        foreach (self::COUNTED_RESOURCES as $name => $key) {
+            if (isset($resources[$name])) {
+                $counts[$key] = ['used' => (int) ($resources[$name]['usage'] ?? 0), 'limit' => $this->limit($resources[$name]['total'] ?? null)];
+            }
+        }
+
+        return [
+            'plan_name' => (string) ($subscription['planName'] ?? ''),
+            'status' => (string) ($subscription['status'] ?? ''),
+            'suspended' => ($subscription['status'] ?? '') === 'suspended' || $this->websiteSuspended($website),
+            'disk_used_mb' => $this->megabytes($resources['diskspace']['usage'] ?? 0) ?? 0,
+            'disk_quota_mb' => $this->megabytes($resources['diskspace']['total'] ?? null),
+            'bandwidth_used_mb' => $this->megabytes($resources['transfer']['usage'] ?? 0) ?? 0,
+            'bandwidth_limit_mb' => $this->megabytes($resources['transfer']['total'] ?? null),
+            'counts' => $counts,
+            'websites' => $this->websiteUsage($org['id'], $subscriptionId, (string) ($website['domain']['domain'] ?? '')),
+        ];
+    }
+
+    /**
+     * Every website on the subscription with its size, last successful backup and the traffic of the last
+     * 30 days, the account domain first. Enhance's own preview hostnames are not listed among the aliases.
+     * Metrics and backups are a call each per website and are left out for that site when they fail.
+     *
+     * @return list<array{domain: string, primary: bool, aliases: list<string>, kind: string, suspended: bool, disk_used_bytes: int, php_version: string, server: string, created_at: string, last_backup_at: ?string, stats: ?array{days: int, visitors: int, requests: int, bot_requests: int, bytes_sent: int, bytes_received: int}}>
+     */
+    private function websiteUsage(string $orgId, int $subscriptionId, string $primaryDomain): array
+    {
+        $start = new DateTimeImmutable('-' . self::METRICS_DAYS . ' days', new DateTimeZone('UTC'));
+        $websites = [];
+        foreach ($this->paginate("/orgs/{$orgId}/websites", ['subscriptionId' => $subscriptionId]) as $site) {
+            if (empty($site['id']) || ($site['status'] ?? '') === 'deleted' || !in_array($site['kind'] ?? 'normal', self::WEBSITE_KINDS, true)) {
+                continue;
+            }
+            $domain = (string) ($site['domain']['domain'] ?? '');
+
+            $stats = null;
+
+            try {
+                $metrics = $this->request('GET', "/orgs/{$orgId}/websites/{$site['id']}/metrics", [], ['start' => $start->format('Y-m-d\TH:i:s\Z'), 'granularity' => 'day']);
+                $stats = $this->sumMetrics(is_array($metrics) ? ($metrics['items'] ?? []) : []);
+            } catch (Server_Exception $e) {
+                $this->getLog()->warning("Metrics for website {$domain} were not available: {$e->getMessage()}");
+            }
+
+            $lastBackup = null;
+
+            try {
+                $backups = $this->request('GET', "/orgs/{$orgId}/websites/{$site['id']}/backups");
+                $lastBackup = $this->lastSuccessfulBackup(is_array($backups) ? ($backups['items'] ?? []) : []);
+            } catch (Server_Exception $e) {
+                $this->getLog()->warning("Backups for website {$domain} were not available: {$e->getMessage()}");
+            }
+
+            $aliases = [];
+            foreach ($site['aliases'] ?? [] as $alias) {
+                if (!empty($alias['domain']) && ($alias['kind'] ?? 'alias') === 'alias') {
+                    $aliases[] = (string) $alias['domain'];
+                }
+            }
+
+            $websites[] = [
+                'domain' => $domain,
+                'primary' => strcasecmp($domain, $primaryDomain) === 0,
+                'aliases' => $aliases,
+                'kind' => (string) ($site['kind'] ?? 'normal'),
+                'suspended' => $this->websiteSuspended($site),
+                'disk_used_bytes' => (int) ($site['size'] ?? 0),
+                'php_version' => preg_replace('/^php(\d)(\d+)$/', '$1.$2', (string) ($site['phpVersion'] ?? '')),
+                'server' => (string) ($site['appServerName'] ?? ''),
+                'created_at' => (string) ($site['createdAt'] ?? ''),
+                'last_backup_at' => $lastBackup,
+                'stats' => $stats,
+            ];
+        }
+
+        usort($websites, static fn (array $a, array $b): int => (int) $b['primary'] <=> (int) $a['primary']);
+
+        return $websites;
+    }
+
+    /**
+     * Newest backup whose files were stored, as an ISO 8601 date in UTC. Partial and failed runs are skipped.
+     */
+    private function lastSuccessfulBackup(array $backups): ?string
+    {
+        $latest = null;
+        foreach ($backups as $backup) {
+            if (!is_array($backup) || ($backup['homeDirStatus'] ?? '') !== 'successful' || empty($backup['startedAt'])) {
+                continue;
+            }
+            $startedAt = (string) $backup['startedAt'];
+            if ($latest === null || strcmp($startedAt, $latest) > 0) {
+                $latest = $startedAt;
+            }
+        }
+
+        return $latest;
+    }
+
+    /**
+     * @return array{days: int, visitors: int, requests: int, bot_requests: int, bytes_sent: int, bytes_received: int}
+     */
+    private function sumMetrics(array $entries): array
+    {
+        $sum = ['days' => self::METRICS_DAYS, 'visitors' => 0, 'requests' => 0, 'bot_requests' => 0, 'bytes_sent' => 0, 'bytes_received' => 0];
+        foreach ($entries as $entry) {
+            if (!is_array($entry)) {
+                continue;
+            }
+            $sum['visitors'] += (int) ($entry['uniqueHits'] ?? 0);
+            $sum['requests'] += (int) ($entry['totalHits'] ?? 0);
+            $sum['bot_requests'] += (int) ($entry['botHits'] ?? 0);
+            $sum['bytes_sent'] += (int) ($entry['bytesSent'] ?? 0);
+            $sum['bytes_received'] += (int) ($entry['bytesReceived'] ?? 0);
+        }
+
+        return $sum;
+    }
+
+    /**
+     * Enhance reports a suspended website as status "disabled" with the suspending organization set.
+     */
+    private function websiteSuspended(array $website): bool
+    {
+        return ($website['status'] ?? '') === 'disabled' || !empty($website['suspendedBy']);
     }
 
     /**

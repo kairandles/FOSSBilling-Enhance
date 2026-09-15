@@ -1,0 +1,133 @@
+{# Live usage of one hosting order, read from the Enhance panel.
+   Include it from the hosting manage template, which has `order` in scope:
+
+     {% include 'mod_enhance_usage.html.twig' with { 'order_id': order.id } %}
+
+   The API call never throws. When the panel cannot be reached it returns an `error` key
+   and this renders a line of text instead of the bars. #}
+
+{% set usage = client.enhance_usage({ 'order_id': order_id }) %}
+
+{% macro meter(used, limit) %}
+    {% set percent = limit > 0 ? min(100, (used / limit * 100)|round) : 0 %}
+    <div class="progress mt-1" style="height: 6px;" role="progressbar" aria-valuenow="{{ percent }}" aria-valuemin="0" aria-valuemax="100">
+        <div class="progress-bar {{ percent >= 90 ? 'bg-danger' : (percent >= 75 ? 'bg-warning' : 'bg-success') }}" style="width: {{ percent }}%"></div>
+    </div>
+{% endmacro %}
+
+{% macro size(bytes) %}
+    {%- if bytes >= 1000000000 %}{{ (bytes / 1000000000)|number_format(1) }} GB
+    {%- elseif bytes >= 1000000 %}{{ (bytes / 1000000)|number_format(0) }} MB
+    {%- elseif bytes >= 1000 %}{{ (bytes / 1000)|number_format(0) }} KB
+    {%- else %}{{ bytes }} B{% endif -%}
+{% endmacro %}
+
+{% import _self as enhance %}
+
+<div class="card my-3">
+    <div class="card-header py-2">
+        <strong>{{ 'Resource usage'|trans }}</strong>
+        {% if usage.plan_name is defined and usage.plan_name %}
+            <span class="small text-secondary ms-2">{{ usage.plan_name }}</span>
+        {% endif %}
+    </div>
+    <div class="card-body">
+        {% if usage.error is defined %}
+            <span class="text-secondary small">{{ 'Usage is unavailable right now.'|trans }}</span>
+        {% else %}
+            {% if usage.suspended %}
+                <div class="alert alert-danger py-2">
+                    <strong>{{ 'This account is suspended.'|trans }}</strong>
+                    {{ 'Websites, email and FTP are offline until it is reactivated.'|trans }}
+                </div>
+            {% endif %}
+
+            {% set sizes = [
+                { 'label': 'Disk space', 'used': usage.disk_used_mb, 'limit': usage.disk_quota_mb },
+                { 'label': 'Bandwidth this month', 'used': usage.bandwidth_used_mb, 'limit': usage.bandwidth_limit_mb },
+            ] %}
+            {% for size in sizes %}
+                <div class="mb-3">
+                    <div class="d-flex justify-content-between small">
+                        <span>{{ size.label|trans }}</span>
+                        <span class="text-secondary">
+                            {% if size.limit is null %}
+                                {{ size.used }} MB, {{ 'unlimited'|trans }}
+                            {% else %}
+                                {{ size.used }} / {{ size.limit }} MB
+                            {% endif %}
+                        </span>
+                    </div>
+                    {% if size.limit is not null %}
+                        {{ enhance.meter(size.used, size.limit) }}
+                    {% endif %}
+                </div>
+            {% endfor %}
+
+            {% set labels = {
+                'websites': 'Websites',
+                'addon_domains': 'Addon domains',
+                'subdomains': 'Subdomains',
+                'domain_aliases': 'Aliases',
+                'mailboxes': 'Mailboxes',
+                'databases': 'Databases',
+                'ftp_users': 'FTP users',
+            } %}
+            <div class="d-flex flex-wrap gap-2 text-center">
+                {% for key, label in labels %}
+                    {% if usage.counts[key] is defined %}
+                        {% set count = usage.counts[key] %}
+                        <div class="flex-fill border rounded p-2" style="min-width: 7rem;">
+                            <div class="fs-4">
+                                {{ count.used }}{% if count.limit is not null %}<span class="fs-6 text-secondary"> / {{ count.limit }}</span>{% endif %}
+                            </div>
+                            <div class="small text-secondary">{{ label|trans }}</div>
+                        </div>
+                    {% endif %}
+                {% endfor %}
+            </div>
+
+            {% if usage.websites is not empty %}
+                <div class="table-responsive mt-3">
+                    <table class="table table-sm table-striped mb-1">
+                        <thead>
+                            <tr>
+                                <th>{{ 'Website'|trans }}</th>
+                                <th class="text-end">{{ 'Disk'|trans }}</th>
+                                <th class="text-end">{{ 'Visitors'|trans }}</th>
+                                <th class="text-end">{{ 'Requests'|trans }}</th>
+                                <th class="text-end">{{ 'Traffic'|trans }}</th>
+                                <th>{{ 'Last backup'|trans }}</th>
+                                <th>{{ 'PHP'|trans }}</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for site in usage.websites %}
+                                <tr>
+                                    <td>
+                                        <a href="https://{{ site.domain }}" target="_blank" rel="noopener">{{ site.domain }}</a>
+                                        {% if site.primary %}<span class="badge bg-primary">{{ 'Primary'|trans }}</span>{% endif %}
+                                        {% if site.kind == 'staging' %}<span class="badge bg-secondary">{{ 'Staging'|trans }}</span>{% endif %}
+                                        {% if site.suspended %}<span class="badge bg-danger">{{ 'Suspended'|trans }}</span>{% endif %}
+                                        {% if site.aliases is not empty %}<div class="small text-secondary">{{ site.aliases|join(', ') }}</div>{% endif %}
+                                    </td>
+                                    <td class="text-end">{{ enhance.size(site.disk_used_bytes) }}</td>
+                                    {% if site.stats %}
+                                        <td class="text-end">{{ site.stats.visitors|number_format(0) }}</td>
+                                        <td class="text-end">{{ site.stats.requests|number_format(0) }}</td>
+                                        <td class="text-end">{{ enhance.size(site.stats.bytes_sent + site.stats.bytes_received) }}</td>
+                                    {% else %}
+                                        <td class="text-end text-secondary" colspan="3">{{ 'Statistics unavailable'|trans }}</td>
+                                    {% endif %}
+                                    <td>{{ site.last_backup_at ? site.last_backup_at|format_date : 'None yet'|trans }}</td>
+                                    <td>{{ site.php_version }}</td>
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                <div class="small text-secondary">{{ 'The primary website is the one this order manages. Visitors, requests and traffic cover the last 30 days.'|trans }}</div>
+            {% endif %}
+        {% endif %}
+    </div>
+</div>

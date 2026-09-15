@@ -1,0 +1,37 @@
+{% extends request.ajax ? "layout_blank.html.twig" : "layout_default.html.twig" %}
+{% set active_menu = 'enhance' %}
+
+{% block meta_title %}{{ 'Hosting usage'|trans }}{% endblock %}
+{% block page_header %}{{ 'Hosting usage'|trans }}{% endblock %}
+
+{% block body_class %}enhance-usage{% endblock %}
+{% block breadcrumb %}<li class="breadcrumb-item active" aria-current="page">{{ 'Hosting usage'|trans }}</li>{% endblock %}
+
+{% block content %}
+<div class="card mb-4">
+    <div class="card-header py-3">
+        <h1 class="mb-1">{{ 'Hosting usage'|trans }}</h1>
+        <span class="small text-secondary">{{ 'Read live from the server each account runs on.'|trans }}</span>
+    </div>
+    <div class="card-body">
+        {% if accounts is empty %}
+            <p class="text-secondary mb-0">{{ 'You have no hosting accounts yet.'|trans }}</p>
+        {% endif %}
+
+        {% for account in accounts %}
+            <div class="card mb-3">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div>
+                            <h3 class="mb-0"><a href="{{ ('order/service/manage/' ~ account.order_id)|url }}">{{ account.domain ?: account.title }}</a></h3>
+                            {% if account.domain %}<span class="small text-secondary">{{ account.title }}</span>{% endif %}
+                        </div>
+                        <span class="badge bg-{{ account.status == 'active' ? 'success' : 'secondary' }}">{{ account.status|trans }}</span>
+                    </div>
+                    {% include 'mod_enhance_usage.html.twig' with { 'order_id': account.order_id } %}
+                </div>
+            </div>
+        {% endfor %}
+    </div>
+</div>
+{% endblock %}

@@ -35,4 +35,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          gh release create "$GITHUB_REF_NAME" --title "$VERSION" --notes-file notes.md Enhance.zip "fossbilling-enhance-$VERSION.zip"
+          gh release create "$GITHUB_REF_NAME" --title "$VERSION" --notes-file notes.md Enhance.zip "fossbilling-enhance-$VERSION.zip" \
+            || gh release upload "$GITHUB_REF_NAME" Enhance.zip "fossbilling-enhance-$VERSION.zip" --clobber

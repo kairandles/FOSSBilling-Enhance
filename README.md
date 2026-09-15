@@ -1,10 +1,16 @@
 # FOSSBilling-Enhance
 
-Server manager for the [Enhance](https://enhance.com) control panel, plus an optional module that creates FOSSBilling hosting plans from the packages in your panel.
+Server manager for the [Enhance](https://enhance.com) control panel, plus an optional module that creates FOSSBilling hosting plans from the packages in your panel and shows clients what their account is using.
+
+## Compatibility
+
+Works on the FOSSBilling 0.8 releases and on the current main line. FOSSBilling is moving from RedBean models to Doctrine entities one module at a time, and hosting has been migrated on main but not in any release yet, so the module asks the hosting service which of the two it expects and reads rows the same way.
 
 ## Install
 
-Copy `Enhance.php` to `src/library/Server/Manager/Enhance.php` in your FOSSBilling install. FOSSBilling can't install server managers from the extension directory, so this step is manual.
+Each release on the [releases page](https://github.com/kairandles/FOSSBilling-Enhance/releases) has two archives: `Enhance.zip` is the module on its own, laid out for FOSSBilling's extension installer, and `fossbilling-enhance-x.y.z.zip` is everything for installing by hand.
+
+Copy `Enhance.php` to `src/library/Server/Manager/Enhance.php` in your FOSSBilling install. FOSSBilling can't install server managers from the extension directory, so this step is always manual.
 
 Then in FOSSBilling go to System > Hosting plans and servers > Servers > New server, choose Enhance and fill in:
 
@@ -22,7 +28,30 @@ Optional custom value `send_setup_email` (default off): when a new customer's we
 
 ## The module
 
-`modules/Enhance` adds an Extensions > Enhance page. Copy it to `src/modules/Enhance` and activate it under Extensions. It lists the packages on each Enhance server and creates matching hosting plans (name, limits, `plan_id`). Plans that already exist are skipped unless you tick overwrite. Unlimited values are stored as `unlimited`, same as the WHM and DirectAdmin managers.
+`modules/Enhance` adds an Extensions > Enhance page. Install it from the extension directory, or copy the folder to `src/modules/Enhance`, then activate it under Extensions. It lists the packages on each Enhance server and creates matching hosting plans (name, limits, `plan_id`). Plans that already exist are skipped unless you tick overwrite. Unlimited values are stored as `unlimited`, same as the WHM and DirectAdmin managers.
+
+The module needs the server manager from the step above. Without it the Enhance page says so and nothing else works.
+
+## Usage in the client area
+
+The module also shows clients what their account is using: disk space, bandwidth for the current month, and the number of websites, domains, mailboxes, databases and FTP users against the plan's limits. Under that, every website on the plan is listed with its size, PHP version, last backup, and the visitors, requests and traffic of the last 30 days. The order's domain is marked as the primary site. The figures are read from the panel when the page loads. Nothing is stored.
+
+They appear in two places:
+
+- `/enhance` in the client area lists every hosting account the client has, each with its usage.
+- The hosting service page can show the same block. Add this line to `src/modules/Servicehosting/templates/client/mod_servicehosting_manage.html.twig`, after the `</table>` that closes the Details tab, or to the copy of that template in your theme:
+
+```twig
+{% include 'mod_enhance_usage.html.twig' with { 'order_id': order.id } %}
+```
+
+A FOSSBilling update overwrites the module template, so you'll need to add the line again afterwards. The include is safe: if the panel can't be reached the block says usage is unavailable and the rest of the page still works.
+
+Enhance tracks usage per subscription, so if a plan holds several websites the figures cover all of them. Every one of those websites is listed, including staging sites, which are labelled. Enhance's own control panel, webmail and hostname sites are left out. Clients can look but not change anything here; the Login to Control Panel button is still where they go to do that.
+
+Each website costs two extra requests to the panel (metrics and backups), so a plan with many sites takes a moment longer to render. If one of those requests fails the row says the statistics are unavailable and the rest still shows.
+
+The client API behind this is `enhance/usage` for one order and `enhance/accounts` for all of a client's hosting orders. Both only return the logged in client's own orders.
 
 ## How it works
 
